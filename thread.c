@@ -1,266 +1,220 @@
-#include <sys/time.h>
-#include "Mythread.h"
-#include <stdio.h>
-#include <signal.h>
-#include <unistd.h>
-#include <time.h>
-#include <assert.h>
+#include "mythread.h"
 #include <stdlib.h>
-#include <pthread.h>
+#include <string.h>
+#include <unistd.h>
 
-#define MAXTHREADS  10
-#define STACK_SIZE  4096
-#define SECOND      1
-#define SIGALRM     14
+ULTSystem ult_system;
 
-#ifdef __x86_64__
-typedef unsigned long address_t;
-#define JB_SP 6
-#define JB_PC 7
-#else
-typedef unsigned int address_t;
-#define JB_SP 4
-#define JB_PC 5
-#endif
-TCB threadList[MAXTHREADS];
-int nThreads = 0;
-int ran = 0;
-int currentThread = 0;
+void schedule();
+void* timer_thread_function(void* arg);
 
-address_t translate_address(address_t addr) {
-    address_t ret;
-    asm volatile("xor    %%fs:0x30,%0\n"
-                 "rol    $0x11,%0\n"
-                 : "=g" (ret)
-                 : "0" (addr));
-    return ret;
-}
+void schedule() {
+    if (ult_system.current_thread != -1) {
+        TCB* current_tcb = ult_system.threads[ult_system.current_thread];
 
-void initStatistics(struct statistics* stat, int id) {
-    assert(stat != NULL);
-    stat->ID = id;
-    stat->state = DED;
-    stat->burst = 0;
-    stat->total_exec_time = 0;
-    stat->total_slp_time = 0;
-    stat->avg_time_quant = 0;
-    stat->avg_wait_time = 0;
-    stat->RedTimeTotal = 0;
-}
-
-void clean() {
-    int count = 0;
-    for (int i = (currentThread + 1) % MAXTHREADS; count < MAXTHREADS; i = (i + 1) % MAXTHREADS) {
-        if (threadList[i].stat.state != DED) {
-            threadList[i].stat.avg_wait_time = threadList[i].stat.RedTimeTotal / threadList[i].stat.burst;
-            threadList[i].stat.avg_time_quant = threadList[i].stat.total_exec_time / threadList[i].stat.burst;
-            printf("Thread ID: %d\nTotal execution time: %ld\nTotal Sleep Time: %ld\nTotal bursts: %ld\nAverage waiting time: %f\nAverage Time Quanta: %f\n\n\n\n\n",
-                   i, threadList[i].stat.total_exec_time, threadList[i].stat.total_slp_time, threadList[i].stat.burst, threadList[i].stat.avg_wait_time, threadList[i].stat.avg_time_quant);
-            threadList[i].stat.state = DED;
-            count++;
+        if (setjmp(current_tcb->context) == 0) {
+            current_tcb->state = READY;
+            ult_system.current_thread = (ult_system.current_thread + 1) % ult_system.thread_count;
+            TCB* next_tcb = ult_system.threads[ult_system.current_thread];
+            next_tcb->state = RUNNING;
+            longjmp(next_tcb->context, 1);
         }
     }
-    exit(0);
 }
 
-void dispatch(int sig) {
-    int count = 0;
-    signal(SIGALRM, SIG_IGN);
+void move_to_suspend_queue(int tid) {
+    TCB* tcb = ult_system.threads[tid];
 
-    if (threadList[currentThread].stat.state != DED) {
-        int ret_val = sigsetjmp(threadList[currentThread].env, 1);
-        if (ret_val == 1) {
-            return;
+    if (tcb->state == RUNNING) {
+        tcb->state = SUSPENDED;
+        ult_system.current_thread = -1;
+    } else if (tcb->state == READY) {
+        // Remove from the ready queue
+        for (int i = 0; i < ult_system.thread_count; ++i) {
+            if (ult_system.threads[i] == tcb) {
+                for (int j = i; j < ult_system.thread_count - 1; ++j) {
+                    ult_system.threads[j] = ult_system.threads[j + 1];
+                }
+                ult_system.thread_count--;
+                break;
+            }
         }
+        tcb->state = SUSPENDED;
+    }
+}
 
-        threadList[currentThread].stat.state = RED;
-        threadList[currentThread].stat.total_exec_time +=
-            (clock() - threadList[currentThread].stat.RunTimeStart) / CLOCKS_PER_SEC;
-        threadList[currentThread].stat.RedTimeStart = clock();
+void move_to_ready_queue(int tid) {
+    TCB* tcb = ult_system.threads[tid];
+    tcb->state = READY;
+    ult_system.threads[ult_system.thread_count++] = tcb;
+}
+
+int mythread_create(void* (*start_routine)(void*), void* arg) {
+    int tid = ult_system.thread_count++;
+
+    TCB* tcb = malloc(sizeof(TCB));
+    tcb->tid = tid;
+
+    // Allocate stack space for the new thread
+    tcb->stack_pointer = malloc(STACK_SIZE);
+
+    // Initialize the thread context
+    if (setjmp(tcb->context) == 0) {
+        // Set the entry function and arguments for the new thread
+        tcb->entry_function = start_routine;
+        tcb->entry_function_arg = arg;
+
+        // Set the initial thread state to READY
+        tcb->state = READY;
     }
 
-    for (int i = (currentThread + 1) % MAXTHREADS; count <= MAXTHREADS; i = (i + 1) % MAXTHREADS) {
-        if (threadList[i].stat.state == RED) {
-            currentThread = i;
-            break;
-        }
-        count++;
+    // Add the new thread to the thread list
+    ult_system.threads[tid] = tcb;
+
+    return tid;
+}
+
+int mythread_yield() {
+    schedule();
+    return 0; // Return value not meaningful
+}
+
+int mythread_self() {
+    return ult_system.current_thread;
+}
+
+int mythread_join(int tid, void** retval) {
+    TCB* tcb = ult_system.threads[tid];
+    while (tcb->state != TERMINATED) {
+        mythread_yield();
+    }
+    if (retval != NULL) {
+        *retval = tcb->entry_function_retval;
+    }
+    return 0;
+}
+
+int mythread_init(int time_slice) {
+    ult_system.thread_count = 0;
+    ult_system.current_thread = -1;
+    ult_system.time_slice = time_slice;
+
+    ult_system.threads = malloc(sizeof(TCB*) * 10); // Initial size, you may need to resize dynamically
+
+    // Create a timer thread
+    pthread_create(&ult_system.timer_thread, NULL, timer_thread_function, NULL);
+
+    return 0;
+}
+
+int mythread_terminate(int tid) {
+    TCB* tcb = ult_system.threads[tid];
+    tcb->state = TERMINATED;
+    free(tcb->stack_pointer);
+    free(tcb);
+
+    schedule();
+    return 0;
+}
+
+int mythread_suspend(int tid) {
+    TCB* tcb = ult_system.threads[tid];
+
+    if (tcb->state == RUNNING) {
+        move_to_suspend_queue(tid);
+        schedule();
+    } else if (tcb->state == READY) {
+        // Remove from the ready queue and place it in the suspend queue
+        move_to_suspend_queue(tid);
     }
 
-    if (count > MAXTHREADS)
-        exit(0);
-
-    threadList[currentThread].stat.state = RUN;
-    threadList[currentThread].stat.RedTimeTotal +=
-        (clock() - threadList[currentThread].stat.RedTimeStart) / CLOCKS_PER_SEC;
-    threadList[currentThread].stat.RunTimeStart = clock();
-    threadList[currentThread].stat.burst++;
-    signal(SIGALRM, alarm_handler);
-    alarm(1);
-    siglongjmp(threadList[currentThread].env, 1);
+    return 0;
 }
 
-void yield() {
-    dispatch(SIGALRM);
-}
+int mythread_resume(int tid) {
+    TCB* tcb = ult_system.threads[tid];
 
-void deleteThread(int threadID) {
-    nThreads--;
-
-    threadList[threadID].stat.state = DED;
-    printf("Thread with %d id is deleted\n", threadID);
-}
-
-static void wrapper(int tid) {
-    if (threadList[tid].tType == 1) {
-        threadList[tid].retVal = threadList[tid].f2(threadList[tid].args);
-    } else {
-        threadList[tid].f1();
-    }
-    printf("Thread %d exited\n", getID());
-    deleteThread(tid);
-
-    signal(SIGALRM, alarm_handler);
-    alarm(1);
-    dispatch(SIGALRM);
-}
-
-int createWithArgs(void *(*f)(void *), void *args) {
-    int id = -1;
-    if (ran == 0) {
-        for (int i = 0; i < MAXTHREADS; i++)
-            initStatistics(&(threadList[i].stat), i);
-        ran = 1;
-    }
-    for (int i = 0; i < MAXTHREADS; i++) {
-        if (threadList[i].stat.state == DED) {
-            id = i;
-            break;
-        }
+    if (tcb->state == SUSPENDED) {
+        // Remove from the suspend queue and place it in the ready queue
+        move_to_ready_queue(tid);
+        schedule();
     }
 
-    if (id == -1) {
-        fprintf(stderr, "Error Cannot allocate id\n");
-        return id;
+    return 0;
+}
+
+int lock_init(Lock* lock) {
+    lock->lock = 0;
+    return 0;
+}
+
+int acquire(Lock* lock) {
+    while (atomic_exchange(&lock->lock, 1)) {
+        mythread_yield();
     }
-
-    assert(id >= 0 && id < MAXTHREADS);
-
-    threadList[id].f2 = f;
-    threadList[id].args = args;
-
-    threadList[id].stat.state = RED;
-    nThreads++;
-    return id;
+    return 0;
 }
 
-int create(void (*f)(void)) {
-    int id = -1;
-    if (ran == 0) {
-        for (int i = 0; i < MAXTHREADS; i++)
-            initStatistics(&(threadList[i].stat), i);
-        ran = 1;
-    }
-
-    for (int i = 0; i < MAXTHREADS; i++) {
-        if (threadList[i].stat.state == DED) {
-            id = i;
-            break;
-        }
-    }
-
-    if (id == -1) {
-        fprintf(stderr, "Error Cannot allocate id");
-        return id;
-    }
-
-    assert(id >= 0 && id < MAXTHREADS);
-    threadList[id].tType = 0;
-    threadList[id].f1 = f;
-    threadList[id].stat.state = NEW;
-    nThreads++;
-    return id;
+int release(Lock* lock) {
+    atomic_store(&lock->lock, 0);
+    return 0;
 }
 
-void alarm_handler(int sig) {
-    signal(SIGALRM, alarm_handler);
-    dispatch(SIGALRM);
-}
+void* timer_thread_function(void* arg) {
+    struct timespec interval;
+    interval.tv_sec = ult_system.time_slice / 1000; // convert milliseconds to seconds
+    interval.tv_nsec = (ult_system.time_slice % 1000) * 1000000; // convert remaining milliseconds to nanoseconds
 
-int getID() {
-    return currentThread;
-}
-
-void run(int tid) {
-    threadList[tid].stat.state = RED;
-}
-
-void suspend(int tid) {
-    threadList[tid].stat.state = SUS;
-}
-
-void resume(int tid) {
-    threadList[tid].stat.state = RED;
-}
-
-void sleep1(int secs) {
-    threadList[currentThread].stat.state = SLP;
-    clock_t StartTime = clock();
-    while (((clock() - StartTime) / CLOCKS_PER_SEC) <= secs)
-        ;
-    threadList[currentThread].stat.total_slp_time += secs;
-
-    dispatch(SIGALRM);
-}
-
-struct statistics* getStatus(int tid) {
-    struct statistics* result = &(threadList[tid].stat);
-    return result;
-}
-
-void start(void) {
-  address_t sp, pc;
-
-  // Initialize the signal handler for SIGALRM
-  signal(SIGALRM, alarm_handler);
-
-  // Code to initialize timer for time-sliced scheduling
-  struct timeval timer;
-  timer.tv_sec = SECOND;
-  timer.tv_usec = 0;
-  setitimer(0, &timer, NULL);
-
-  // Set the current thread ID
-  currentThread = 0;
-
-  // Start the timer
-  alarm(1);
-
-  int ret_val = setjmp(threadList[currentThread].env);
-  if (ret_val == 0) {
-    // This is the first time this thread is running
-    // Initialize the stack and jump to the wrapper function
-    void* stack = malloc(STACK_SIZE);
-    threadList[currentThread].stack = stack;
-
-    sp = (address_t)stack + STACK_SIZE - sizeof(address_t);
-    pc = (address_t)wrapper;
-    (threadList[currentThread].env->__jmpbuf)[JB_SP] = translate_address(sp);
-    (threadList[currentThread].env->__jmpbuf)[JB_PC] = translate_address(pc);
-    sigemptyset(&(threadList[currentThread].env)->__saved_mask);
-    threadList[currentThread].stat.state = RED;
-    threadList[currentThread].stat.RunTimeStart = clock();
-    siglongjmp(threadList[currentThread].env, 1);
-  } else {
-    // This thread is resuming from a setjmp
     while (1) {
-      dispatch(SIGALRM);
+        nanosleep(&interval, NULL);
+        schedule();
     }
-  }
+
+    return NULL;
+}
+void* thread1_function(void* arg) {
+    while (1) {
+        printf("Hello from thread 1\n");
+        mythread_yield();
+    }
+    return NULL;
 }
 
+void* thread2_function(void* arg) {
+    while (1) {
+        printf("Hello from thread 2\n");
+        mythread_yield();
+    }
+    return NULL;
+}
 
 int main() {
-    start();
+    // Initialize the ULT system with a time slice of 10 milliseconds
+    mythread_init(10);
+
+    // Create a thread that prints "Hello from thread 1" every second
+    int thread1 = mythread_create(thread1_function, NULL);
+
+    // Create a thread that prints "Hello from thread 2" every 2 seconds
+    int thread2 = mythread_create(thread2_function, NULL);
+
+    // Run the threads for some time
+    sleep(5);
+
+    // Suspend thread 1 for a while
+    mythread_suspend(thread1);
+    sleep(5);
+    // Resume thread 1
+    mythread_resume(thread1);
+
+    // Wait for both threads to terminate
+    mythread_join(thread1, NULL);
+    mythread_join(thread2, NULL);
+
+    printf("Main thread exiting\n");
+
+    // Cleanup: You may want to add proper cleanup for the timer thread and other resources.
+    // For simplicity, this example omits cleanup steps.
+
     return 0;
 }
