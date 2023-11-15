@@ -1,9 +1,13 @@
 #ifndef MYTHREAD_H
 #define MYTHREAD_H
 
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <setjmp.h>
 #include <stdatomic.h>
+#include <windows.h>
 
 #define STACK_SIZE 8192
 
@@ -37,9 +41,12 @@ typedef struct {
     int lock;
 } Lock;
 
+extern ULTSystem ult_system;
+
 void schedule();
 void move_to_suspend_queue(int tid);
 void move_to_ready_queue(int tid);
+void* timer_thread_function(void* arg);
 
 int mythread_create(void* (*start_routine)(void*), void* arg);
 int mythread_yield();
