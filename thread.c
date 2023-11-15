@@ -1,5 +1,5 @@
 #include<stdio.h>
-#include "Mythread.h"
+#include "MyThread.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -173,46 +173,4 @@ void* timer_thread_function(void* arg) {
     }
 
     return NULL;
-}
-void* thread1_function(void* arg) {
-    while (1) {
-        printf("Hello from thread 1\n");
-        mythread_yield();
-    }
-    return NULL;
-}
-
-void* thread2_function(void* arg) {
-    while (1) {
-        printf("Hello from thread 2\n");
-        mythread_yield();
-    }
-    return NULL;
-}
-   int main() {
-    // Initialize the ULT system with a time slice of 10 milliseconds
-    mythread_init(10);
-
-    // Create a thread that prints "Hello from thread 1" every second
-    int thread1 = mythread_create(thread1_function, NULL);
-
-    // Create a thread that prints "Hello from thread 2" every 2 seconds
-    int thread2 = mythread_create(thread2_function, NULL);
-
-    // Run the threads for some time
-    Sleep(5000);
-
-    // Suspend thread 1 for a while
-    mythread_suspend(thread1);
-    Sleep(5000);
-    // Resume thread 1
-    mythread_resume(thread1);
-
-    // Wait for both threads to terminate
-    mythread_join(thread1, NULL);
-    mythread_join(thread2, NULL);
-
-    printf("Main thread exiting\n");
-
-    return 0;
 }
