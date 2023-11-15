@@ -1,60 +1,57 @@
-
 #ifndef MYTHREAD_H
 #define MYTHREAD_H
-#include <signal.h>
-#include <time.h>
+
+#include <pthread.h>
 #include <setjmp.h>
+#include <stdatomic.h>
 
+#define STACK_SIZE 8192
 
-enum ThreadState {
-    NEW,
-    RED,
-    RUN,
-    SUS,
-    SLP,
-    DED,
-};
-
-struct statistics {
-    int ID;
-    enum ThreadState state;
-    clock_t burst;
-    clock_t total_exec_time;
-    clock_t total_slp_time;
-    float avg_time_quant;
-    float avg_wait_time;
-    float RedTimeTotal;
-    clock_t RedTimeStart;
-    clock_t RunTimeStart;
-};
+typedef enum {
+    READY,
+    RUNNING,
+    BLOCKED,
+    SUSPENDED,
+    TERMINATED
+} ThreadState;
 
 typedef struct {
     int tid;
-    int tType;
-    enum ThreadState state;
-    void (*f1)(void);
-    void* (*f2)(void*);
-    void* args;
-    void* stack;
-    void* retVal;
-    struct statistics stat;
-    sigjmp_buf env;  // Fix: Move sigjmp_buf declaration here
+    jmp_buf context;
+    void* stack_pointer;
+    ThreadState state;
+    void* (*entry_function)(void*);
+    void* entry_function_arg;
+    void* entry_function_retval;
 } TCB;
 
-void initStatistics(struct statistics* stat, int id);
-void clean();
-void dispatch(int sig);
-void yield();
-void deleteThread(int threadID);
-int createWithArgs(void* (*f)(void*), void* args);
-int create(void (*f)(void));
-void alarm_handler(int sig);
-int getID();
-void run(int tid);
-void suspend(int tid);
-void resume(int tid);
-void sleep1(int secs);
-struct statistics* getStatus(int tid);
-void start(void);
+typedef struct {
+    TCB** threads;
+    int thread_count;
+    int current_thread;
+    int time_slice;
+    pthread_t timer_thread;
+} ULTSystem;
 
-#endif  // MYTHREAD_H
+typedef struct {
+    int lock;
+} Lock;
+
+void schedule();
+void move_to_suspend_queue(int tid);
+void move_to_ready_queue(int tid);
+
+int mythread_create(void* (*start_routine)(void*), void* arg);
+int mythread_yield();
+int mythread_self();
+int mythread_join(int tid, void** retval);
+int mythread_init(int time_slice);
+int mythread_terminate(int tid);
+int mythread_suspend(int tid);
+int mythread_resume(int tid);
+
+int lock_init(Lock* lock);
+int acquire(Lock* lock);
+int release(Lock* lock);
+
+#endif // MYTHREAD_H
