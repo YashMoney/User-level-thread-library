@@ -167,7 +167,6 @@ int release(Lock* lock) {
 
 void* timer_thread_function(void* arg) {
     DWORD interval = ult_system.time_slice;
-
     while (1) {
         Sleep(interval);
         schedule();
@@ -190,8 +189,7 @@ void* thread2_function(void* arg) {
     }
     return NULL;
 }
-
-int main() {
+   int main() {
     // Initialize the ULT system with a time slice of 10 milliseconds
     mythread_init(10);
 
@@ -202,11 +200,11 @@ int main() {
     int thread2 = mythread_create(thread2_function, NULL);
 
     // Run the threads for some time
-    sleep(5);
+    Sleep(5000);
 
     // Suspend thread 1 for a while
     mythread_suspend(thread1);
-    sleep(5);
+    Sleep(5000);
     // Resume thread 1
     mythread_resume(thread1);
 
@@ -215,8 +213,6 @@ int main() {
     mythread_join(thread2, NULL);
 
     printf("Main thread exiting\n");
-
-    
 
     return 0;
 }
