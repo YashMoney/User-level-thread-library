@@ -1,7 +1,12 @@
-#include "mythread.h"
+#include<stdio.h>
+#include "Mythread.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <setjmp.h>
+#include <stdatomic.h>
+#include <windows.h>
 
 ULTSystem ult_system;
 
@@ -161,12 +166,10 @@ int release(Lock* lock) {
 }
 
 void* timer_thread_function(void* arg) {
-    struct timespec interval;
-    interval.tv_sec = ult_system.time_slice / 1000; // convert milliseconds to seconds
-    interval.tv_nsec = (ult_system.time_slice % 1000) * 1000000; // convert remaining milliseconds to nanoseconds
+    DWORD interval = ult_system.time_slice;
 
     while (1) {
-        nanosleep(&interval, NULL);
+        Sleep(interval);
         schedule();
     }
 
@@ -213,8 +216,7 @@ int main() {
 
     printf("Main thread exiting\n");
 
-    // Cleanup: You may want to add proper cleanup for the timer thread and other resources.
-    // For simplicity, this example omits cleanup steps.
+    
 
     return 0;
 }
